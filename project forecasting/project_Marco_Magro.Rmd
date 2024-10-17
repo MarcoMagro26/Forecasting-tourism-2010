@@ -1,0 +1,435 @@
+---
+title: "Project of predictive business and finance"
+author: "Marco Magro"
+date: "2023-12-06"
+output: html_document
+---
+
+```{r}
+matricola<- 899049
+
+```
+# 1. Data Preparation and data visualization
+
+## 1.1 Load Required Libraries
+```{r, echo=FALSE, warning=FALSE}
+library(fpp3)
+library(reshape2) 
+library(forecast)
+library(fpp3)
+library(seasonal)
+library(tsibble)
+library(tidyverse)
+```
+
+
+```{r}
+tourism <- read.csv("tourism_data.csv", header = TRUE) 
+
+```
+
+# Loading of the time series data into R and check its structure, column names, and any potential issues.
+
+```{r,results='hide'}
+glimpse(tourism)
+```
+```{r}
+tourism1<- tourism %>%
+  mutate(Time = row_number()) %>%
+  pivot_longer(cols = -Time, names_to = "series", values_to = "value")
+
+full_tourism<- tourism1%>%
+  as_tsibble(index = Time, key = series)
+```
+
+```{r}
+count_na <- colSums(is.na(full_tourism))
+count_na
+
+```
+
+As we can see in our dataset there are a lot of NA in each time series, overall we have exactly 11668 NA values. Therefore, we try to deal with this missing values in order to get a suitable forecasting method
+
+# Plotting all the series
+
+```{r warning=FALSE}
+full_tourism %>% na.omit(full_tourism)%>%
+  autoplot(value, alpha = 0.3) +
+  labs(title=" All time series from the dataset" ,x = "Time", y = "Value")+
+  theme_minimal()+
+  guides(color = FALSE, scale="none")
+```
+
+Analyzing the plot, it emerges several insights:
+Patterns and Seasonality: Certain series demonstrate discernible trends, either ascending or descending, alongside seasonal fluctuations marked by regular, repeating patterns.
+
+Fluctuations in Data: The series exhibit varying degrees of fluctuation, impacting the selection of forecasting methods. Some methods are more suitable for stable data series, while others are better equipped to handle high variability.
+
+Presence of Gaps: Breaks or gaps in the lines indicate the presence of missing values within the data.
+
+Diversity in Patterns: While some series may share similar patterns, others display distinctive differences. This diversity underscores the need for a flexible forecasting approach capable of adapting to the unique characteristics of each series.
+
+Identification of Anomalies: Unusual spikes or drops within the data may signal anomalies or errors requiring further investigation
+
+An interesting point by looking the graph, we can see a distinct pattern emerges, highlighting the heterogeneous nature of our time series. One of the most important observations concerns the different starting points for each time series: there is no uniform start across the board. Interestingly, most seem to start around the 15th-20th timestep.
+
+***We decided to standardize the values in order to assess if there's a more discernible trend within the series.***
+
+```{r, warning=FALSE}
+scaled_data <- full_tourism %>%
+  group_by(series) %>%
+  mutate_if(is.numeric, scale)
+ggplot(scaled_data)+
+  geom_line(aes(x = Time,y = value, col = series))+ 
+  theme(legend.position = "none")
+```
+
+From the plot we can see that it's difficult to make an interpretation, so we try to clean up all variables in a sort of way.
+Let's see the 20 activities with most data in time (least NA in years)
+
+```{r}
+nas_count <- colSums(is.na(tourism))
+sorted_columns <- names(sort(nas_count))
+selected_columns <- head(sorted_columns, 20)
+subset_tourism<- select(tourism, all_of(selected_columns))
+
+subset_tourism$Year <- 1:43
+column_names <- colnames(subset_tourism)[colnames(subset_tourism) != "Year"]
+
+subset_tourism <- subset_tourism%>%
+  as_tsibble(index = Year)
+```
+
+
+```{r, warning=FALSE}
+mod_df <- melt(subset_tourism, id.vars = NULL)
+mod_df <- mod_df %>%
+  group_by(variable) %>%
+  mutate(Year = row_number())
+ggplot(mod_df)+
+  geom_line(aes(x = Year, y = value, color = variable)) +
+  theme(legend.position = "none")
+
+```
+
+**Scaled subset data:**
+
+```{r, warning=FALSE}
+scaled_data1 <- mod_df %>%
+  group_by(variable) %>%
+  mutate_if(is.numeric, scale)
+
+ggplot(scaled_data1)+                           
+  geom_line(aes(x = Year, y = value, color = variable)) +
+  theme(legend.position = "none")
+```
+
+The analysis of the unscaled dataset reveals a prevalent upward trend, particularly noticeable in the longer series. Conversely, the examination of the scaled dataset highlights distinct cyclic patterns. While seasonality appears somewhat indistinct across most series, certain spikes are consistently observed in some of them.
+
+## 2. Data Modelling
+
+In order to build a prediction model, it is essential to divide the data into training and validation series. Given the variability in the length of the time series and the limited observations in some of them, a common strategy is to assign the last four years of each series to the validation set. The rationale behind this split is to simulate model performance on unseen future data, since the validation set contains data from a later time periods. This helps to assess the model's ability to generalize to new data. However, the disadvantage of this approach is that it can lead to a smaller training set, which can affect the model's ability to learn complex models and can result in less accurate models.
+Before creating the training and validation sets, I decided to take into account only 20 series instead of all 518. Furthermore, to ensure consistency across time intervals, I saw that most of the time series start from time 15, so I decided to drop the values from 1-15. Dropping data shouldn't be done carelessly, as it's equivalent of losing information, but after seeing that this gives improved accuracy measures later 
+
+```{r}
+filtered_data <- filter(subset_tourism, Year > 15)%>%
+  mutate(Row_Year = as.numeric(rownames(.)))%>%
+  as_tsibble(index = Row_Year) %>%
+  pivot_longer(cols = -Row_Year, names_to = "series", values_to = "value")
+```
+
+```{r}
+filtered_data<- filtered_data %>% 
+  group_by(series) %>%
+  mutate(train = Row_Year) %>%
+  mutate(train = ifelse(train > 24, 0, 1))
+
+train <- filtered_data%>%
+  filter(train == 1)
+test <- filtered_data %>%
+  filter(train == 0)
+```
+
+```{r}
+ggplot(train, aes(x = Row_Year, y = value, color = series)) +
+  geom_line() +
+  labs(x = "Year", y = "Value", title = "Training Data") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(test, aes(x = Row_Year, y = value, color = series)) +
+  geom_line() +
+  labs(x = "Year", y = "Value", title = "Test data") +
+  theme_minimal()
+```
+
+The two visualization show a considerable disparity. In the training data graph, there is a significant positive trend, particularly noticeable between years 10 and 25. In contrast, the graph of test data shows a marked contrast, with a negative trend. Moreover, in most of the time series, a pronounced decline is observed between years 27 and 28.
+
+## 3. Generate naive forecasts for all series for the validation period.
+
+```{r}
+fit_model <- train %>%
+  group_by(series)%>%
+  model(NAIVE = NAIVE(value))
+
+forecast <- fit_model %>%
+  forecast(h=4)
+forecast
+```
+
+```{r}
+augment(fit_model) 
+```
+
+```{r, warning=FALSE}
+augment(fit_model) %>%
+ggplot(aes(x = Row_Year)) +
+geom_line(aes(y = value, colour = "Data")) +
+geom_line(aes(y = .fitted, colour = "Fitted"))
+```
+
+This visualization shows that the two lines are not at all similar, which indicates that the model does not fit the data well.
+If the lines are far apart, the model may have difficulty accurately predicting the data.
+
+```{r, warning=FALSE}
+augment(fit_model) %>%
+  autoplot(.resid)
+```
+
+The residual graph provides valuable information on the goodness of fit of the model.
+This plot doesn't seem to be respected the assumption of white noise because there are great spikes. Moreover, this graph does not respect the assumption of homoschedasticity because each line has a different variability 
+
+```{r, warning=FALSE}
+autoplot(train) +
+  autolayer(forecast, series = series, .mean) +
+  labs(title = "Naive Method Forecast vs Training Data")
+```
+
+With this graph we can visually assess how well the Naive method fits the training data.
+The areas (confidence intervals) are wide, meaning that there is a lot of uncertainty in the predictions. This could indicate that the Naive method does not fit the data well or that the data itself is very volatile and difficult to predict.
+We can deduce that this model does not fit the data well or fails to capture certain patterns.
+
+```{r, warning=FALSE}
+autoplot(test) +
+  autolayer(forecast, series = series, .mean) +
+  labs(title = "Naive Method Forecast vs Test Data")
+```
+
+The naive method with test data performs worse than the one with training data.
+
+## 4. Which measures are suitable if we plan to combine the results for the 518 series? Consider MAE, Average error, MAPE and RMSE.
+
+1.  **Mean Absolute Error (MAE):** $$ MAE = \frac{1}{n} \sum_{i=1}^{n} |Y_i - \hat{Y}_i| $$
+2.  **Average Error:** $$ \text{Average Error} = \frac{1}{n} \sum_{i=1}^{n} (Y_i - \hat{Y}_i) $$
+3.  **Mean Absolute Percentage Error (MAPE):** $$ MAPE = \frac{1}{n} \sum_{i=1}^{n} \left| \frac{Y_i - \hat{Y}_i}{Y_i} \right| \times 100 $$
+4.  **Root Mean Squared Error (RMSE):** $$ RMSE = \sqrt{\frac{1}{n} \sum_{i=1}^{n} (Y_i - \hat{Y}_i)^2} $$
+
+**Mean Absolute Error (MAE)**= provides a straightforward measure of prediction accuracy by averaging the absolute differences between predicted and actual values. It is particularly useful when understanding the typical magnitude of errors is essential, regardless of their direction. Minimizing MAE leads to forecasts that closely resemble the median of the data.
+
+**Average Error**=  reflects the bias in predictions, indicating whether the model consistently overestimates or underestimates actual values. However, it may not fully capture the accuracy of the model if positive and negative errors offset each other.
+
+**Mean Absolute Percentage Error (MAPE)**= offers a scale-independent evaluation by expressing accuracy in terms of percentage. However, it may encounter challenges with zero or near-zero values and could overly emphasize large percentage errors in low-value series.
+
+**Root Mean Square Error (RMSE)**= is sensitive to outliers, as it squares errors, giving greater weight to larger deviations. This can be advantageous when minimizing large errors is crucial. RMSE emphasizes accuracy in terms of variance, making it suitable for scenarios where minimizing deviations from the mean is desirable.
+
+**Choosing the Best Measure:**
+
+The choice of the best measure depends on the specific requirements. MAPE might be preferred for scale-independent evaluation, while RMSE might be more suitable for dealing with significant errors within predictions.
+
+## 5. For each series, compute MAPE of the naive forecasts once for the training period and once for the validation period.
+
+```{r}
+mape_train <- fabletools::accuracy(fit_model) %>%
+  arrange(.model) %>%
+  select(series, .type, MAPE)
+mape_train
+```
+
+```{r}
+mape_test <- fabletools::accuracy(forecast, test) %>%
+  arrange(.model) %>%
+  select(series, .type, MAPE)
+mape_test
+```
+
+```{r}
+mean(mape_train$MAPE)
+mean(mape_test$MAPE)
+```
+
+## 6. The performance measure used in the competition is Mean Absolute Scaled Error (MASE)
+
+**Mean Absolute Scaled Error(MASE)**. It's a measure used to evaluate the accuracy of forecasting models. MASE is particularly useful because it is scale-independent, meaning it can be used to compare forecasts across different data sets with different scales.
+
+$$ MASE = \frac{\text{Mean Absolute Error (MAE)}}{\text{Mean Absolute Error of Naive Forecast}} $$
+
+```{r}
+mase_train <- fabletools::accuracy(fit_model) %>%
+  arrange(.model) %>%
+  select(series, .type, MASE)
+mase_train
+```
+
+```{r}
+mase_test <- fabletools::accuracy(forecast, filtered_data)%>%
+  arrange(.model)%>%
+  select(series, .type, MASE)
+mase_test
+```
+
+```{r}
+mean(mase_train$MASE)
+mean(mase_test$MASE)
+```
+
+These values indicate the performance of the naive model. A MASE = 1 means that the forecast is as accurate as a naive forecast, < 1 that the forecast is better and if > 1 indicate worse performance. 
+In this case we have a MASE of 1, therefore it suggests that our naive model performs equal to the simple one-step naive forecast.
+
+## Scatter plot of MAPE
+
+```{r}
+combined_mape <- bind_rows(mape_train, mape_test)
+
+ggplot(combined_mape, aes(x = series, y = MAPE, color = .type)) +
+  geom_point() +
+  labs(title = "MAPE for Training and Test Sets",x = "Series",y = "MAPE") +
+  theme_minimal() +
+  scale_color_manual(values = c("Training" = "green", "Test" = "red"))
+```
+
+Looking at the scatter plot of the MAPE pairs seems that the training MAPE values are generally slightly smaller than the validation MAPE values, indicating a better fit of the model to the training data.
+Additionally, there are more outliers in the validation set than in the training set, indicating a wider range of performance across the validation series. This implies that the model’s performance varies more across the different series in the validation set compared to the training set.
+If the points are all positioned on the diagonal line, it means that MAPE_train = MAPE_test, which means that they have the same/similar performance. We can clearly see this is not the case, although there are some points that seems to follow the line.
+
+## Scatter plot of MASE
+
+```{r}
+combined_mase <- bind_rows(mase_train, mase_test)
+ggplot(combined_mase, aes(x = series, y = MASE, color = .type)) +
+  geom_point() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "blue") +
+  labs(title = "MASE for Training and Test Sets", x = "Series", y = "MASE") +
+  theme_minimal() +
+  scale_color_manual(values = c("Training" = "green", "Test" = "red"))
+```
+
+
+We can see that the model’s performance on unseen data is bad because most of the values are above to 1 and we would prefer values under 1.
+This lack of performance is reasonable since we are using a Naive method and the series may have characteristics that this simple model cannot capture.
+
+## 8. The competition winner, Lee Baker, used an ensemble of three methods:
+
+**Naive forecasts adjusted for a constant trend:** This method involves using simple naive forecasts and then adjusting them by multiplying with a constant trend factor. The constant trend reflects the known annual growth rate of global tourism, which is estimated at 6%. This adjustment allows the forecast to account for the expected consistent influence of this growth rate on future tourism trends.
+\[\hat{y}_{t+h} = y_t \cdot (1 + \gamma)\]
+
+**Linear regression:** Another component of the ensemble is linear regression, which utilizes historical data to establish a linear relationship between variables. This method enables capturing more complex dynamics and trends present in the data, providing a complementary perspective to the naive forecasts.
+\[ \hat{y} = b_0 + b_1 \cdot x \]
+
+**Exponentially-weighted linear regression:** This method combines the benefits of linear regression with exponential smoothing, allowing for adaptability to changing patterns in the data. By assigning exponentially decreasing weights to past observations, this approach emphasizes recent data while still incorporating information from earlier periods.
+\[ \hat{y}_{t+h}  = b_0 + b_1 \cdot S \\ where \ S = \alpha \cdot y_{t}+(1 - \alpha) \cdot S_{t-1} \]
+
+The formula that embody the 3 model could be the following.
+
+\[ F_{{t+k}|{T}} = \ L_{t} \]
+
+\[ \ \ \ \ L_{t-1} =  \alpha \cdot (y_{t-1}  \cdot (1 + \gamma)) + (1-\alpha) \cdot \ L_{t-1}]\]
+
+
+\[
+\text{EWMA}_t = \alpha \times \text{observation}t + (1 - \alpha) \times \text{EWMA}{t-1}
+\]
+
+\(F_{{t+k}|{T}} \)is the forecast for k = 1, 2, 3, 4
+\( L_{t}\)is the level of parameter
+\(\alpha\)is the moving average parameter
+\(y_{t-1} \)is the last observation
+\(\gamma\)is the constant value. (positive global tourism trend)
+
+The inclusion of these three methods in the ensemble approach allows for a comprehensive and robust forecasting strategy that can adapt to various patterns and trends present in the tourism data.
+
+***What should be the dependent variable and the predictors in a linear regression model for this data?***
+
+The fundamental concept of the linear regression prediction model is the assumption of a straight-line relationship between the predicted variable (y) and a predictor variable (x). The model is represented by the equation:
+\[ y_t = \beta_0 + \beta_1 x_t + \varepsilon_t \]
+
+Considering the tourism dataset, our analysis revolves around time, represented by the variable Time_count. Consequently, we designate the value of the time series at t+1 as our dependent variable, while time serves as our independent variable. Analyzing the data and taking into account tourism dynamics, it's evident that tourism typically exhibits a rising trend over time.
+
+***Fit the linear regression model to the first five series and compute forecast errors for the validation period.***
+
+```{r, warning=FALSE}
+first_5 <- unique(train$series)[1:5]
+train_5 <- train[train$series %in% first_5, ]
+test_5 <- test[test$series %in% first_5, ]
+
+fit_reg <- train_5 %>%
+  group_by(series) %>%
+  model(TSLM(value~ trend() ))
+
+report(fit_reg)
+```
+
+```{r, warning=FALSE}
+fit_reg %>% forecast(h=4) %>% autoplot(train_5)
+```
+
+```{r}
+augment(fit_reg) %>%
+  ACF(.resid) %>%
+  autoplot() +
+  labs(title = "ACF of residuals") +
+  facet_wrap(~ series)
+```
+
+**ACF (Auto-Correlation Function)** is a commonly used tool for analyzing the autocorrelation structure of a time series or the residuals from a time series model. The ACF(.resid) graph specifically deals with the autocorrelation of the residuals of a time series model. 
+The Auto-correlation is a measure of how each value in a time series is correlated with its lagged (previous) values. The ACF function calculates these correlations for different lags and plots them.
+
+Interpretation:
+**Lag (x-axis):** The x-axis represents the number of lags. "lag[1]" refers to the correlation of residuals with themselves at a lag of one time step. In other words, the correlation between the residuals at time t and the residuals at time t-1.
+**Correlation (y-axis):** The y-axis represents the strength of the correlation. Values closer to 1 indicate a strong positive correlation, values closer to -1 indicate a strong negative correlation, and values close to 0 indicate no correlation.
+The horizontal dashed lines is the confidence bands on the ACF plot to help you identify statistically significant correlations. 
+If there are spikes in the ACF plot are well above the confidence bands, it suggests a significant positive autocorrelation at that lag. This means that the residuals at that lag are correlated with each other.
+If there are spikes in the ACF plot are well below the confidence bands, it suggests a significant negative autocorrelation at that lag. This means that the residuals at that lag have a negative correlation.
+By looking our ACF graph shows few significant correlation at lag[1], this indicates that the model has captured fair enough the data's temporal patterns and the residuals are quite random. In general, it is desirable that the residuals of a regression model show no significant correlation at the various time lags, as this would suggest that the model has not fully captured all the information in the dataset.
+
+***Before choosing a linear regression, the winner described the following process:***
+***”I examined fitting a polynomial line to the data and using the line to predict future values. I tried using first through fifth order polynomials to find that the lowest MASE was obtained using a first order polynomial (simple regression line). This best fit line was used to predict future values. I also kept the R2 value of the fit for use in blending the results of the prediction.”***
+
+This approach has several potential inconvenience:
+
+Linear Regression Assumption: The model assumes a constant trend for future predictions, overlooking the possibility of nonlinear trends in real-world data. This assumption of linearity could result in inaccurate predictions, as it fails to capture the complexity of actual trends.
+
+Overfitting with Higher-Order Polynomials: The use of a fifth-order polynomial introduces the risk of overfitting. While higher-order polynomials can closely fit the training data, capturing detailed patterns and variations, they may also capture noise that do not generalize well to new data. This reflects the bias-variance trade-off, where a more complex model may lead to better fit on the training data but poorer performance on unseen data.
+
+Limitations of R-squared (R2): R-squared measures the proportion of variance in the dependent variable explained by the independent variables but does not directly assess the model's predictive accuracy. Consequently, reliance only on R-squared may not adequately evaluate how well the model's predicted values align with actual observations.
+
+***If we were to consider exponential smoothing, what particular type(s) of exponential smoothing are reasonable candidates?***
+
+When forecasting multiple time series, all displaying a consistent positive trend, the most suitable choice for exponential smoothing would likely be Holt's trend-corrected double exponential smoothing (DES). This method is specifically designed to handle data featuring a constant trend, as it incorporates a trend component explicitly. It is particularly effective for datasets demonstrating a linear trend without seasonal fluctuations. Holt's method contains a forecast equation along with two smoothing equations for both the level and trend components. The forecast generated is a linear function of time, rendering it well-suited for datasets characterized by a linear trend.
+
+\[F_{t+m} = L_t + m \cdot T_t \]
+\[L_t = \alpha \cdot Y_t + (1 - \alpha) \cdot (L_{t-1} + T_{t-1})\]
+\[T_t = \beta \cdot (L_t - L_{t-1}) + (1 - \beta) \cdot T_{t-1}\]
+
+When analyzing a subset of time series data and considering the presence of seasonality, another viable option is Triple Exponential Smoothing, commonly referred to as the Holt-Winters method. This method represents a more sophisticated extension of exponential smoothing and is capable of addressing both trends and seasonality within the data. Unlike simpler exponential smoothing techniques, Holt-Winters allows for dynamic adjustments in the level, trend, and seasonal patterns over time. Accurate modeling of seasonality requires specifying the number of time steps within each seasonal period
+
+***The winner concludes with possible improvements one being ”an investigation into how to come up with a blending ensemble method that doesn’t use much manual twerking would also be of benefit”. Can you suggest methods or an approach that would lead to easier automation of the ensemble step?***
+
+One possible solution could be to use automated hyperparameter tuning. It is a fundamental process in machine learning, aimed at finding the optimal combination of hyperparameters to produce the best model. Hyperparameter optimization in time series forecasting involves finding the best set of hyperparameters for a model to improve its forecasting performance. This is typically done through techniques such as random search, grid search, Bayesian optimization, or genetic algorithms. The process aims to find the right combination of hyperparameter values that minimize the forecast error or maximize the accuracy of the model. 
+
+
+***The competition focused on minimizing the average MAPE of the next four values across all 518 series. How does this goal differ from goals encountered in practice when considering tourism demand? Which steps in the forecasting process would likely be different in a real-life tourism forecasting scenario?***
+
+Predicting tourism dynamics in practical scenarios demands a realistic approach that goes beyond simply analyzing historical time series data. Factors such as population growth, economic development, and evolving travel trends are integral components of the forecasting framework. Effective tourism demand forecasting models must be adaptable to the dynamic nature of these factors, requiring continual monitoring and refinement of forecasting methodologies.
+
+In real-world applications, forecasting efforts within the tourism sector need to transcend reliance only on historical data. To accurately capture the complexity of demand fluctuations, models should incorporate additional variables and characteristics to reflect the diverse influences shaping travel patterns.
+
+Furthermore, forecasting in the tourism sector often requires projecting beyond a limited time horizon of four years, commonly found in competitive environments.  Practical applications within tourism organizations demand forecasts spanning longer periods to facilitate comprehensive strategic planning. To meet this extended forecasting horizon, various modelling techniques capable of capturing lasting trends over extended intervals become essential.
+
+
+
+
+
+
+
+
