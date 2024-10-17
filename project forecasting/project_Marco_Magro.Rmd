@@ -331,7 +331,7 @@ This lack of performance is reasonable since we are using a Naive method and the
 
 The formula that embody the 3 model could be the following.
 
-\[ F_{{t+k}|{T}} = \ L_{t} \]
+\[ F_{{t+k}}|{T} = \ L_{t} \]
 
 \[ \ \ \ \ L_{t-1} =  \alpha \cdot (y_{t-1}  \cdot (1 + \gamma)) + (1-\alpha) \cdot \ L_{t-1}]\]
 
@@ -340,7 +340,7 @@ The formula that embody the 3 model could be the following.
 \text{EWMA}_t = \alpha \times \text{observation}t + (1 - \alpha) \times \text{EWMA}{t-1}
 \]
 
-\(F_{{t+k}|{T}} \)is the forecast for k = 1, 2, 3, 4
+\(F_{{t+k}}|{T} \)is the forecast for k = 1, 2, 3, 4
 \( L_{t}\)is the level of parameter
 \(\alpha\)is the moving average parameter
 \(y_{t-1} \)is the last observation
